@@ -1,4 +1,4 @@
-/* bpred.c - branch predictor routines */
+8/* bpred.c - branch predictor routines */
 
 /* SimpleScalar(TM) Tool Suite
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
@@ -48,6 +48,13 @@
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
 
+ /* 
+ * HACK: Incorporación del predictor Cascade.
+ * Autores: German Telmo Eizaguirre y Arey Ferrero
+ * Asignatura de Arquitectura de Compuadores
+ * Doble Titulación en Ingeniería Informática y Biotecnología, Universidad Rovira i Virgili
+ * Curso 2018-2019
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,27 +93,41 @@ bpred_create(enum bpred_class class,	/* type of predictor to create */
   case BPredComb:
     /* bimodal component */
     pred->dirpred.bimod = 
-      bpred_dir_create(BPred2bit, bimod_size, 0, 0, 0);
+      bpred_dir_create(BPred2bit, bimod_size, 0, 0, 0, 0);
 
     /* 2-level component */
     pred->dirpred.twolev = 
-      bpred_dir_create(BPred2Level, l1size, l2size, shift_width, xor);
+      bpred_dir_create(BPred2Level, l1size, l2size, shift_width, xor, 0);
 
     /* metapredictor component */
     pred->dirpred.meta = 
-      bpred_dir_create(BPred2bit, meta_size, 0, 0, 0);
+      bpred_dir_create(BPred2bit, meta_size, 0, 0, 0, 0);
+
+    break;
+    
+   // HACK: New case Cascade
+   case BPredCascade:
+    /* componente bimodal */
+    pred->dirpred.bimod = 
+      bpred_dir_create(BPred2bit, bimod_size, 0, 0, 0, 1/*usage table activated*/);
+
+    /* 2-level component */
+    pred->dirpred.twolev = 
+      bpred_dir_create(BPred2Level, 1/*siempre un BHR global */, l2size, shift_width, 1/*xor flag must be 1 for gshare*/, 1 /*usage table activated*/);
+
+    //No tiene metapredictor
 
     break;
 
   case BPred2Level:
     pred->dirpred.twolev = 
-      bpred_dir_create(class, l1size, l2size, shift_width, xor);
+      bpred_dir_create(class, l1size, l2size, shift_width, xor, 0);
 
     break;
 
   case BPred2bit:
     pred->dirpred.bimod = 
-      bpred_dir_create(class, bimod_size, 0, 0, 0);
+      bpred_dir_create(class, bimod_size, 0, 0, 0, 0);
 
   case BPredTaken:
   case BPredNotTaken:
@@ -120,6 +141,8 @@ bpred_create(enum bpred_class class,	/* type of predictor to create */
   /* allocate ret-addr stack */
   switch (class) {
   case BPredComb:
+  // HACK: añadir cascade
+  case BPredCascade:
   case BPred2Level:
   case BPred2bit:
     {
@@ -183,7 +206,8 @@ bpred_dir_create (
   unsigned int l1size,	 	/* level-1 table size */
   unsigned int l2size,	 	/* level-2 table size (if relevant) */
   unsigned int shift_width,	/* history register width */
-  unsigned int xor)	    	/* history xor address flag */
+  unsigned int xor,			/* history xor address flag */
+  unsigned int usage_table)	/* usage table activation flag */   	
 {
   struct bpred_dir_t *pred_dir;
   unsigned int cnt;
@@ -221,7 +245,7 @@ bpred_dir_create (
       pred_dir->config.two.l2table = calloc(l2size, sizeof(unsigned char));
       if (!pred_dir->config.two.l2table)
 	fatal("cannot allocate second level table");
-
+		
       /* initialize counters to weakly this-or-that */
       flipflop = 1;
       for (cnt = 0; cnt < l2size; cnt++)
@@ -229,7 +253,18 @@ bpred_dir_create (
 	  pred_dir->config.two.l2table[cnt] = flipflop;
 	  flipflop = 3 - flipflop;
 	}
-
+	
+		if (usage_table==1){
+			// HACK: Inicializacion de tabla de uso para elección de predictor
+				 pred_dir->config.two.usage_table = calloc(l2size, sizeof(char));
+			  if (!pred_dir->config.two.usage_table)
+				fatal("cannot allocate usage table in two level");
+			for (cnt = 0; cnt < l2size; cnt++)
+			{
+				// HACK: poner todas las entradas de la tabla de uso a -1.
+			  pred_dir->config.two.usage_table[cnt] = -1;
+			}
+		}
       break;
     }
 
@@ -238,9 +273,11 @@ bpred_dir_create (
       fatal("2bit table size, `%d', must be non-zero and a power of two", 
 	    l1size);
     pred_dir->config.bimod.size = l1size;
+    
     if (!(pred_dir->config.bimod.table =
 	  calloc(l1size, sizeof(unsigned char))))
       fatal("cannot allocate 2bit storage");
+      
     /* initialize counters to weakly this-or-that */
     flipflop = 1;
     for (cnt = 0; cnt < l1size; cnt++)
@@ -272,15 +309,30 @@ bpred_dir_config(
 {
   switch (pred_dir->class) {
   case BPred2Level:
-    fprintf(stream,
+  //HACK: si es cascade, indica que contiene flags de uso.
+    if (!mystricmp(name, "2lev_cascade")){
+		fprintf(stream,
+      "pred_dir: %s: 2-lvl: %d l1-sz, %d bits/ent, %s xor, %d l2-sz, direct-mapped, with usage flags (secondary)\n",
+      name, pred_dir->config.two.l1size, pred_dir->config.two.shift_width,
+      pred_dir->config.two.xor ? "" : "no", pred_dir->config.two.l2size);
+	}else{
+		fprintf(stream,
       "pred_dir: %s: 2-lvl: %d l1-sz, %d bits/ent, %s xor, %d l2-sz, direct-mapped\n",
       name, pred_dir->config.two.l1size, pred_dir->config.two.shift_width,
       pred_dir->config.two.xor ? "" : "no", pred_dir->config.two.l2size);
+	}
     break;
-
+	
   case BPred2bit:
-    fprintf(stream, "pred_dir: %s: 2-bit: %d entries, direct-mapped\n",
+  
+  //HACK: si es cascade, indica que contiene flags de uso.
+	if (!mystricmp(name, "bimod_cascade")){
+		fprintf(stream, "pred_dir: %s: 2-bit: %d entries, direct-mapped (primary)\n",
       name, pred_dir->config.bimod.size);
+	}else{
+		fprintf(stream, "pred_dir: %s: 2-bit: %d entries, direct-mapped\n",
+      name, pred_dir->config.bimod.size);
+	}
     break;
 
   case BPredTaken:
@@ -306,6 +358,15 @@ bpred_config(struct bpred_t *pred,	/* branch predictor instance */
     bpred_dir_config (pred->dirpred.bimod, "bimod", stream);
     bpred_dir_config (pred->dirpred.twolev, "2lev", stream);
     bpred_dir_config (pred->dirpred.meta, "meta", stream);
+    fprintf(stream, "btb: %d sets x %d associativity", 
+	    pred->btb.sets, pred->btb.assoc);
+    fprintf(stream, "ret_stack: %d entries", pred->retstack.size);
+    break;
+    
+    // HACK: nueva case, Cascade
+   case BPredCascade:
+    bpred_dir_config (pred->dirpred.bimod, "bimod_cascade", stream);
+    bpred_dir_config (pred->dirpred.twolev, "2lev_cascade", stream);
     fprintf(stream, "btb: %d sets x %d associativity", 
 	    pred->btb.sets, pred->btb.assoc);
     fprintf(stream, "ret_stack: %d entries", pred->retstack.size);
@@ -361,6 +422,10 @@ bpred_reg_stats(struct bpred_t *pred,	/* branch predictor instance */
     case BPredComb:
       name = "bpred_comb";
       break;
+    // HACK: new option Cascade.
+    case BPredCascade:
+      name = "bpred_cascade";
+      break;
     case BPred2Level:
       name = "bpred_2lev";
       break;
@@ -391,7 +456,7 @@ bpred_reg_stats(struct bpred_t *pred,	/* branch predictor instance */
 		   "total number of direction-predicted hits "
 		   "(includes addr-hits)", 
 		   &pred->dir_hits, 0, NULL);
-  if (pred->class == BPredComb)
+  if ((pred->class == BPredComb)||(pred->class == BPredCascade))
     {
       sprintf(buf, "%s.used_bimod", name);
       stat_reg_counter(sdb, buf, 
@@ -487,10 +552,16 @@ bpred_after_priming(struct bpred_t *bpred)
   ((((ADDR) >> 19) ^ ((ADDR) >> MD_BR_SHIFT)) & ((PRED)->config.bimod.size-1))
     /* was: ((baddr >> 16) ^ baddr) & (pred->dirpred.bimod.size-1) */
 
+
+/*****INICIO bpred_dir_lookup*****/
+
 /* predicts a branch direction */
 char *						/* pointer to counter */
 bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
-		 md_addr_t baddr)		/* branch address */
+		 md_addr_t baddr,				/* branch address */
+		 int usage_table,				/* indicador de tabla de uso (si esta acticado, la funcion devuelve la posicion adecuada de la tabla de uso */	
+		 // HACK: añadimos tiene_dir para saber si el twolevel tiene datos registrados en la posicion.
+		 int * tiene_dir)				/* indicador de contenido tabla uso, si esta a 1 modifica la referencia  en base a si la tabla de uso tiene info de la posicion (1) o no (0)*/				
 {
   unsigned char *p = NULL;
 
@@ -498,40 +569,55 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
   switch (pred_dir->class) {
     case BPred2Level:
       {
-	int l1index, l2index;
+		int l1index, l2index;
 
-        /* traverse 2-level tables */
-        l1index = (baddr >> MD_BR_SHIFT) & (pred_dir->config.two.l1size - 1);
-        l2index = pred_dir->config.two.shiftregs[l1index];
-        if (pred_dir->config.two.xor)
-	  {
-#if 1
-	    /* this L2 index computation is more "compatible" to McFarling's
-	       verison of it, i.e., if the PC xor address component is only
-	       part of the index, take the lower order address bits for the
-	       other part of the index, rather than the higher order ones */
-	    l2index = (((l2index ^ (baddr >> MD_BR_SHIFT))
-			& ((1 << pred_dir->config.two.shift_width) - 1))
-		       | ((baddr >> MD_BR_SHIFT)
-			  << pred_dir->config.two.shift_width));
-#else
-	    l2index = l2index ^ (baddr >> MD_BR_SHIFT);
-#endif
-	  }
-	else
-	  {
-	    l2index =
-	      l2index
-		| ((baddr >> MD_BR_SHIFT) << pred_dir->config.two.shift_width);
-	  }
-        l2index = l2index & (pred_dir->config.two.l2size - 1);
+		
+			/* traverse 2-level tables */
+			l1index = (baddr >> MD_BR_SHIFT) & (pred_dir->config.two.l1size - 1);
+			l2index = pred_dir->config.two.shiftregs[l1index];
+			if (pred_dir->config.two.xor)
+		  {
+	#if 1
+			/* this L2 index computation is more "compatible" to McFarling's
+			   verison of it, i.e., if the PC xor address component is only
+			   part of the index, take the lower order address bits for the
+			   other part of the index, rather than the higher order ones */
+			l2index = (((l2index ^ (baddr >> MD_BR_SHIFT))
+				& ((1 << pred_dir->config.two.shift_width) - 1))
+				   | ((baddr >> MD_BR_SHIFT)
+				  << pred_dir->config.two.shift_width));
+	#else
+			l2index = l2index ^ (baddr >> MD_BR_SHIFT);
+	#endif
+		  }
+		else
+		  {
+			l2index =
+			  l2index
+			| ((baddr >> MD_BR_SHIFT) << pred_dir->config.two.shift_width);
+		  }
+			l2index = l2index & (pred_dir->config.two.l2size - 1);
+			
+		// HACK: si usage_table activado
+		if (((*tiene_dir==1)&&(((pred_dir->config.two.usage_table[l2index])>-1)&&((pred_dir->config.two.usage_table[l2index])<4)))){
+			*tiene_dir=1;
+		}
+		else {
+			*tiene_dir=0;
+		}
 
-        /* get a pointer to prediction state information */
-        p = &pred_dir->config.two.l2table[l2index];
+		if (usage_table){
+			// si esta activado la opcion usage_table, devuelve de la direccion d ela tabla de uso a actualizar.
+			p = &pred_dir->config.two.usage_table[l2index];
+		}
+		else{
+			p = &pred_dir->config.two.l2table[l2index];
+			
+		}
       }
       break;
     case BPred2bit:
-      p = &pred_dir->config.bimod.table[BIMOD_HASH(pred_dir, baddr)];
+		p = &pred_dir->config.bimod.table[BIMOD_HASH(pred_dir, baddr)];
       break;
     case BPredTaken:
     case BPredNotTaken:
@@ -542,6 +628,8 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
 
   return (char *)p;
 }
+
+/*****FIN bpred_dir_lookup*****/
 
 /* probe a predictor for a next fetch address, the predictor is probed
    with branch address BADDR, the branch target is BTARGET (used for
@@ -563,6 +651,9 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
 {
   struct bpred_btb_ent_t *pbtb = NULL;
   int index, i;
+  int tiene_dir, usage_table;
+  tiene_dir=0;		// por defecto, 0. Solo 1 si se quiere saber si tabla de uso contiene datos.
+  usage_table=0;	// solo si se quiere obtner direccion de la tabla de uso
 
   if (!dir_update_ptr)
     panic("no bpred update record");
@@ -583,9 +674,9 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
       if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND))
 	{
 	  char *bimod, *twolev, *meta;
-	  bimod = bpred_dir_lookup (pred->dirpred.bimod, baddr);
-	  twolev = bpred_dir_lookup (pred->dirpred.twolev, baddr);
-	  meta = bpred_dir_lookup (pred->dirpred.meta, baddr);
+	  bimod = bpred_dir_lookup (pred->dirpred.bimod, baddr, usage_table, &tiene_dir);
+	  twolev = bpred_dir_lookup (pred->dirpred.twolev, baddr, usage_table, &tiene_dir);
+	  meta = bpred_dir_lookup (pred->dirpred.meta, baddr, usage_table, &tiene_dir);
 	  dir_update_ptr->pmeta = meta;
 	  dir_update_ptr->dir.meta  = (*meta >= 2);
 	  dir_update_ptr->dir.bimod = (*bimod >= 2);
@@ -602,18 +693,51 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
 	    }
 	}
       break;
+      
+    // HACK: new case Cascade
+    case BPredCascade:
+      if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND)) // Control de operaciones de salto condicional
+	{
+	  char *bimod, *twolev, *meta;
+	  int usage_table;
+	  bimod = bpred_dir_lookup (pred->dirpred.bimod, baddr, usage_table, &tiene_dir);
+	  usage_table=1;
+	  tiene_dir=0;
+	  meta = bpred_dir_lookup (pred->dirpred.twolev, baddr, usage_table, &tiene_dir);
+	  usage_table=0;
+	  tiene_dir=1;
+	  twolev = bpred_dir_lookup (pred->dirpred.twolev, baddr, usage_table, &tiene_dir);
+		// si devuelven direccion valida(mas de dos bits, ya que cada dir 4 bytes)
+	  dir_update_ptr->dir.bimod = (*bimod >= 2);
+	  dir_update_ptr->dir.twolev  = (*twolev >= 2);
+	  if ((tiene_dir)&&(*meta >= 2)) // Si twolev tiene direccion, (aprovechamos meta para indicarlo)
+	    {
+			dir_update_ptr->dir.meta=1;
+	      dir_update_ptr->pdir1 = twolev; //direccion tabla PHT (para luego actualizarla).
+	      dir_update_ptr->pdir2 = bimod;
+	    }
+	  else
+	    {
+			dir_update_ptr->dir.meta=0;
+	      dir_update_ptr->pdir1 = bimod;
+	      dir_update_ptr->pdir2 = twolev;
+	    }
+	    dir_update_ptr->pmeta = meta; //direccion de la tabla de uso
+	}
+      break;
+    
     case BPred2Level:
       if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND))
 	{
 	  dir_update_ptr->pdir1 =
-	    bpred_dir_lookup (pred->dirpred.twolev, baddr);
+	    bpred_dir_lookup (pred->dirpred.twolev, baddr, &usage_table, &tiene_dir);
 	}
       break;
     case BPred2bit:
       if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND))
 	{
 	  dir_update_ptr->pdir1 =
-	    bpred_dir_lookup (pred->dirpred.bimod, baddr);
+	    bpred_dir_lookup (pred->dirpred.bimod, baddr, &usage_table, &tiene_dir);
 	}
       break;
     case BPredTaken:
@@ -777,10 +901,12 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
     }
   else if ((MD_OP_FLAGS(op) & (F_CTRL|F_COND)) == (F_CTRL|F_COND))
     {
-      if (dir_update_ptr->dir.meta)
-	pred->used_2lev++;
-      else
-	pred->used_bimod++;
+		// HACK: Cascade aprovecha meta para saber el predictor que utilizara.
+			  if (dir_update_ptr->dir.meta)
+			pred->used_2lev++;
+			  else
+			pred->used_bimod++;
+		
     }
 
   /* keep stats about JR's; also, but don't change any bpred state for JR's
@@ -826,9 +952,14 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
 
   /* update L1 table if appropriate */
   /* L1 table is updated unconditionally for combining predictor too */
-  if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND) &&
-      (pred->class == BPred2Level || pred->class == BPredComb))
-    {
+  if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND))
+  {
+     if (
+     (pred->class == BPred2Level || pred->class == BPredComb)
+     ||//HACK: actualizacion de BHR de twolev de Cascade: si se ha usado bimod y ha fallado o si se ha usado twolev.
+     ((pred->class == BPredCascade)&&((dir_update_ptr->dir.meta)||(!correct)))
+     ){
+
       int l1index, shift_reg;
       
       /* also update appropriate L1 history register */
@@ -838,7 +969,10 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
 	(pred->dirpred.twolev->config.two.shiftregs[l1index] << 1) | (!!taken);
       pred->dirpred.twolev->config.two.shiftregs[l1index] =
 	shift_reg & ((1 << pred->dirpred.twolev->config.two.shift_width) - 1);
-    }
+		}
+
+	}
+   
 
   /* find BTB entry if it's a taken branch (don't allocate for non-taken) */
   if (taken)
@@ -912,6 +1046,8 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
    */
 
   /* update state (but not for jumps) */
+  // Actualizacion PHTs //aqui
+  // Cascade: pdir1 siempre se actualiza.
   if (dir_update_ptr->pdir1)
     {
       if (taken)
@@ -928,40 +1064,73 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
 
   /* combining predictor also updates second predictor and meta predictor */
   /* second direction predictor */
-  if (dir_update_ptr->pdir2)
-    {
-      if (taken)
-	{
-	  if (*dir_update_ptr->pdir2 < 3)
-	    ++*dir_update_ptr->pdir2;
-	}
-      else
-	{ /* not taken */
-	  if (*dir_update_ptr->pdir2 > 0)
-	    --*dir_update_ptr->pdir2;
-	}
-    }
+  if (!(pred->class == BPredCascade)){ 
+		  if (dir_update_ptr->pdir2)
+			{
+			  if (taken)
+			{
+			  if (*dir_update_ptr->pdir2 < 3)
+				++*dir_update_ptr->pdir2;
+			}
+			  else
+			{ /* not taken */
+			  if (*dir_update_ptr->pdir2 > 0)
+				--*dir_update_ptr->pdir2;
+			}
+			}
 
-  /* meta predictor */
-  if (dir_update_ptr->pmeta)
-    {
-      if (dir_update_ptr->dir.bimod != dir_update_ptr->dir.twolev)
-	{
-	  /* we only update meta predictor if directions were different */
-	  if (dir_update_ptr->dir.twolev == (unsigned int)taken)
-	    {
-	      /* 2-level predictor was correct */
-	      if (*dir_update_ptr->pmeta < 3)
-		++*dir_update_ptr->pmeta;
-	    }
-	  else
-	    {
-	      /* bimodal predictor was correct */
-	      if (*dir_update_ptr->pmeta > 0)
-		--*dir_update_ptr->pmeta;
-	    }
-	}
+		  /* meta predictor */
+		  if (dir_update_ptr->pmeta)
+			{
+			  if (dir_update_ptr->dir.bimod != dir_update_ptr->dir.twolev)
+			{
+			  /* we only update meta predictor if directions were different */
+			  if (dir_update_ptr->dir.twolev == (unsigned int)taken)
+				{
+				  /* 2-level predictor was correct */
+				  if (*dir_update_ptr->pmeta < 3)
+				++*dir_update_ptr->pmeta;
+				}
+			  else
+				{
+				  /* bimodal predictor was correct */
+				  if (*dir_update_ptr->pmeta > 0)
+				--*dir_update_ptr->pmeta;
+				}
+			}
     }
+   }
+   else{// HACK: caso de Cascade.
+	   
+	   
+	   if ((dir_update_ptr->dir.meta)||(!correct)){ //twolev o error
+		   
+		   //actualizar usage_table
+		    if (dir_update_ptr->pdir2)
+			{
+			   if (*dir_update_ptr->pmeta < 3)
+						++*dir_update_ptr->pmeta;
+			
+			}
+		   
+		   
+		   if (dir_update_ptr->pdir2)
+			{
+				  if (taken)
+				{
+				  if (*dir_update_ptr->pdir2 < 3)
+					++*dir_update_ptr->pdir2;
+				}
+				  else
+				{ /* not taken */
+				  if (*dir_update_ptr->pdir2 > 0)
+					--*dir_update_ptr->pdir2;
+				}
+		   
+			}
+		}
+	   
+   }
 
   /* update BTB (but only for taken branches) */
   if (pbtb)

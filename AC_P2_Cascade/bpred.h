@@ -49,6 +49,14 @@
  */
 
 
+ /* 
+ * HACK: Incorporación del predictor Cascade.
+ * Autores: German Telmo Eizaguirre y Arey Ferrero
+ * Asignatura de Arquitectura de Compuadores
+ * Doble Titulación en Ingeniería Informática y Biotecnología, Universidad Rovira i Virgili
+ * Curso 2018-2019
+ */
+ 
 #ifndef BPRED_H
 #define BPRED_H
 
@@ -104,6 +112,7 @@ enum bpred_class {
   BPred2bit,			/* 2-bit saturating cntr pred (dir mapped) */
   BPredTaken,			/* static predict taken */
   BPredNotTaken,		/* static predict not taken */
+  BPredCascade,			/* combined predictor (Gshare and Bimodal) with prediction preferences */
   BPred_NUM
 };
 
@@ -130,6 +139,7 @@ struct bpred_dir_t {
       int xor;			/* history xor address flag */
       int *shiftregs;		/* level-1 history table */
       unsigned char *l2table;	/* level-2 prediction state table */
+      char *usage_table;
     } two;
   } config;
 };
@@ -206,7 +216,8 @@ bpred_dir_create (
   unsigned int l1size,		/* level-1 table size */
   unsigned int l2size,		/* level-2 table size (if relevant) */
   unsigned int shift_width,	/* history register width */
-  unsigned int xor);	   	/* history xor address flag */
+  unsigned int xor,			/* history xor address flag */
+  unsigned int usage_table); /* usage table activation flag */	   	
 
 /* print branch predictor configuration */
 void

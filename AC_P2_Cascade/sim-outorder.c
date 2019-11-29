@@ -49,6 +49,14 @@
  */
 
 
+ /* 
+ * HACK: Incorporación del predictor Cascade.
+ * Autores: German Telmo Eizaguirre y Arey Ferrero
+ * Asignatura de Arquitectura de Compuadores
+ * Doble Titulación en Ingeniería Informática y Biotecnología, Universidad Rovira i Virgili
+ * Curso 2018-2019
+ */
+ 
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -123,6 +131,10 @@ static int twolev_nelt = 4;
 static int twolev_config[4] =
   { /* l1size */1, /* l2size */1024, /* hist */8, /* xor */FALSE};
 
+/* HACK: cascade predictor config */
+static int cascade_nelt = 0;
+static int cascade_config[0];
+  
 /* combining predictor config (<meta_table_size> */
 static int comb_nelt = 1;
 static int comb_config[1] =
@@ -647,10 +659,11 @@ sim_reg_options(struct opt_odb_t *odb)
 "      PAp     : N, W, M (M == 2^(N+W)), 0\n"
 "      gshare  : 1, W, 2^W, 1\n"
 "  Predictor `comb' combines a bimodal and a 2-level predictor.\n"
+"  Predictor 'cascade' combines a bimodal and a Gshare predictor. \n "
                );
 
   opt_reg_string(odb, "-bpred",
-		 "branch predictor type {nottaken|taken|perfect|bimod|2lev|comb}",
+		 "branch predictor type {nottaken|taken|perfect|bimod|2lev|comb|cascade}",
                  &pred_type, /* default */"bimod",
                  /* print */TRUE, /* format */NULL);
 
@@ -667,6 +680,13 @@ sim_reg_options(struct opt_odb_t *odb)
 		   /* default */twolev_config,
                    /* print */TRUE, /* format */NULL, /* !accrue */FALSE);
 
+  //HACK: NEW PARAMETHERS: Cascade
+  opt_reg_int_list(odb, "-bpred:cascade",
+		   "cascade predictor config (no meta table)",
+		   cascade_config, cascade_nelt, &cascade_nelt,
+		   /* default */cascade_config,
+		   /* print */TRUE, /* format */NULL, /* !accrue */FALSE);
+		   
   opt_reg_int_list(odb, "-bpred:comb",
 		   "combining predictor config (<meta_table_size>)",
 		   comb_config, comb_nelt, &comb_nelt,
@@ -969,6 +989,30 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
 			  /* l1 size */twolev_config[0],
 			  /* l2 size */twolev_config[1],
 			  /* meta table size */comb_config[0],
+			  /* history reg size */twolev_config[2],
+			  /* history xor address */twolev_config[3],
+			  /* btb sets */btb_config[0],
+			  /* btb assoc */btb_config[1],
+			  /* ret-addr stack size */ras_size);
+    }
+	//HACK: crrate Cascade.
+    else if (!mystricmp(pred_type, "cascade"))
+    {
+      /* cascade predictor, bpred_create() checks args */
+      if (twolev_nelt != 4)
+	fatal("bad 2-level pred config (<l1size> <l2size> <hist_size> <xor>)");
+      if (bimod_nelt != 1)
+	fatal("bad bimod predictor config (<table_size>)");
+      if (cascade_nelt != 0)
+	fatal("bad cascade predictor config (<meta_table_size>)");
+      if (btb_nelt != 2)
+	fatal("bad btb config (<num_sets> <associativity>)");
+
+      pred = bpred_create(BPredCascade,
+			  /* bimod table size */bimod_config[0],
+			  /* l1 size */twolev_config[0],
+			  /* l2 size */twolev_config[1],
+			  /* meta table size */0,/* not tiene predictor de precitores, lo inicializamos como se inicializa n twolev */
 			  /* history reg size */twolev_config[2],
 			  /* history xor address */twolev_config[3],
 			  /* btb sets */btb_config[0],
